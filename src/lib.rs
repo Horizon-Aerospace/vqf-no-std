@@ -7,7 +7,7 @@
 //! # Example
 //! ```rust
 //! use nalgebra::Vector3;
-//! use std::time::Duration;
+//! use core::time::Duration;
 //! use vqf::{Vqf, VqfParameters};
 //!
 //! let gyro_rate = Duration::from_secs_f32(0.01); // 100Hz
@@ -21,13 +21,14 @@
 //! vqf.update(gyro_data, accel_data);
 //!
 //! let orientation = vqf.orientation();
-//! println!("Current orientation: {:?}", orientation);
 //! ```
+
+#![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod low_pass_filter;
 
 use core::f32;
-use std::time::Duration;
+use core::time::Duration;
 
 use low_pass_filter::{second_order_butterworth, MeanInitializedLowPassFilter};
 use nalgebra::{Matrix3, Quaternion, SVector, SimdPartialOrd, UnitQuaternion, Vector2, Vector3};
@@ -276,22 +277,26 @@ impl VqfBiasCoefficients {
     #[must_use]
     fn new(accelerometer_rate: Duration, params: &VqfParameters) -> Self {
         // line 17 of Algorithm 2, the initial variance of the bias
-        let p0 = (params.bias_sigma_initial * BIAS_SCALE).powi(2);
+        let p0_base = params.bias_sigma_initial * BIAS_SCALE;
+        let p0 = p0_base * p0_base;
 
         // line 18 of Algorithm 2
         // System noise increases the variance from 0 to (0.1 °/s)^2 in
         // `bias_forgetting_time` duration
-        let v = (0.1 * 100_f32).powi(2) * accelerometer_rate.as_secs_f32()
+        let v_base = 0.1 * 100_f32;
+        let v = v_base * v_base * accelerometer_rate.as_secs_f32()
             / params.bias_forgetting_time.as_secs_f32();
 
         // line 19 of Algorithm 2
-        let p_motion = (params.bias_sigma_motion * BIAS_SCALE).powi(2);
-        let motion_w = p_motion.powi(2) / v + p_motion;
+        let p_motion_base = params.bias_sigma_motion * BIAS_SCALE;
+        let p_motion = p_motion_base * p_motion_base;
+        let motion_w = p_motion * p_motion / v + p_motion;
         let vertical_w = motion_w / params.bias_vertical_forgetting_factor.max(1e-10);
 
         // line 20 of Algorithm 2
-        let p_rest = (params.bias_sigma_rest * BIAS_SCALE).powi(2);
-        let rest_w = p_rest.powi(2) / v + p_rest;
+        let p_rest_base = params.bias_sigma_rest * BIAS_SCALE;
+        let p_rest = p_rest_base * p_rest_base;
+        let rest_w = p_rest * p_rest / v + p_rest;
 
         Self {
             p0,
@@ -495,8 +500,8 @@ impl Vqf {
         // predict the new orientation (eq. 3)
         let half_angle = (self.gyro_rate.as_secs_f32() * gyro_norm) / 2.;
 
-        let cosine = (half_angle).cos();
-        let sine = (half_angle).sin() / gyro_norm;
+        let cosine = libm::cosf(half_angle);
+        let sine = libm::sinf(half_angle) / gyro_norm;
         let gyro_step = Quaternion::new(cosine, sine * gyro.x, sine * gyro.y, sine * gyro.z);
 
         self.state.gyroscope =
@@ -509,8 +514,8 @@ impl Vqf {
         let deviation = gyro - gyro_lp;
         let squared_deviation = deviation.dot(&deviation);
 
-        let bias_clip = self.parameters.bias_clip.to_radians();
-        if squared_deviation >= self.parameters.rest_threshold_gyro.powi(2)
+        let bias_clip = self.parameters.bias_clip * (core::f32::consts::PI / 180.0);
+        if squared_deviation >= self.parameters.rest_threshold_gyro * self.parameters.rest_threshold_gyro
             || gyro_lp.abs().max() > bias_clip
         {
             self.state.rest = None;
@@ -543,7 +548,7 @@ impl Vqf {
         let acc_earth = (self.state.accelerometer * accel_low_pass).normalize();
 
         // inclination correction
-        let q_w = ((acc_earth.z + 1.0) / 2.0).sqrt(); // equation 4
+        let q_w = libm::sqrtf((acc_earth.z + 1.0) / 2.0); // equation 4
 
         // equation 5
         let inclination_correction = if q_w > f32::EPSILON {
@@ -567,7 +572,7 @@ impl Vqf {
         let deviation = acc - accel_lp;
         let squared_deviation = deviation.dot(&deviation);
 
-        if squared_deviation >= self.parameters.rest_threshold_accel.powi(2) {
+        if squared_deviation >= self.parameters.rest_threshold_accel * self.parameters.rest_threshold_accel {
             self.state.rest = None;
         } else {
             self.state.rest = Some(self.state.rest.unwrap_or_default() + self.accel_rate);
@@ -579,7 +584,7 @@ impl Vqf {
     /// This is roughly equal to the `BiasEstimationStep` procedure from
     /// Algorithm 2 in the paper.
     fn bias_estimation_step(&mut self, acc_earth: Vector3<f32>) {
-        let bias_clip = self.parameters.bias_clip.to_radians();
+        let bias_clip = self.parameters.bias_clip * (core::f32::consts::PI / 180.0);
         let mut bias = self.state.bias;
 
         let accel_gyro_quat = self.orientation();
@@ -660,9 +665,10 @@ impl Vqf {
             let r_p = r * self.state.bias_p;
 
             let w_r_p_r_t = w_diag + (r_p * r_transpose);
-            let w_r_p_r_t_inv = w_r_p_r_t
-                .try_inverse()
-                .expect("(W + R P R^T) isn't a square matrix");
+            let w_r_p_r_t_inv = match w_r_p_r_t.try_inverse() {
+                Some(inv) => inv,
+                None => return, // matrix not invertible, skip this update
+            };
             let k = self.state.bias_p * r_transpose * w_r_p_r_t_inv;
 
             // step 3: b = b + k e (line 37)
