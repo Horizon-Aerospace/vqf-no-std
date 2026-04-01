@@ -5,9 +5,9 @@
 //! [`MeanInitializedLowPassFilter`], which is initialized with an arithmetic
 //! mean over the first few samples.
 
-use nalgebra::SMatrix;
 use core::f32::consts::PI;
 use core::time::Duration;
+use nalgebra::SMatrix;
 
 /// A second-order Butterworth low-pass filter for NxM-dimensional signals,
 /// initialized with an arithmetic mean.
@@ -203,16 +203,16 @@ pub fn second_order_butterworth(tau: Duration, sampling_time: Duration) -> ([f32
     let tau = tau.as_secs_f32();
     let sampling_time = sampling_time.as_secs_f32();
 
-    let fc = libm::sqrtf(2.0) / (2.0 * PI * tau);
-    let c = libm::tanf(PI * fc * sampling_time);
-    let d = c * c + libm::sqrtf(2.0) * c + 1.0;
+    let fc = crate::math::sqrtf(2.0) / (2.0 * PI * tau);
+    let c = crate::math::tanf(PI * fc * sampling_time);
+    let d = c * c + crate::math::sqrtf(2.0) * c + 1.0;
 
     let b0 = c * c / d;
     let b1 = 2.0 * b0;
     let b2 = b0;
 
     let a1 = (2.0 * (c * c - 1.0)) / d;
-    let a2 = (1.0 - libm::sqrtf(2.0) * c + c * c) / d;
+    let a2 = (1.0 - crate::math::sqrtf(2.0) * c + c * c) / d;
 
     ([b0, b1, b2], [a1, a2])
 }

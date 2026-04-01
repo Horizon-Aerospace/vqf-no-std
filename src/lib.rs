@@ -26,6 +26,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod low_pass_filter;
+mod math;
 
 use core::f32;
 use core::time::Duration;
@@ -500,8 +501,8 @@ impl Vqf {
         // predict the new orientation (eq. 3)
         let half_angle = (self.gyro_rate.as_secs_f32() * gyro_norm) / 2.;
 
-        let cosine = libm::cosf(half_angle);
-        let sine = libm::sinf(half_angle) / gyro_norm;
+        let cosine = math::cosf(half_angle);
+        let sine = math::sinf(half_angle) / gyro_norm;
         let gyro_step = Quaternion::new(cosine, sine * gyro.x, sine * gyro.y, sine * gyro.z);
 
         self.state.gyroscope =
@@ -514,8 +515,9 @@ impl Vqf {
         let deviation = gyro - gyro_lp;
         let squared_deviation = deviation.dot(&deviation);
 
-        let bias_clip = self.parameters.bias_clip * (core::f32::consts::PI / 180.0);
-        if squared_deviation >= self.parameters.rest_threshold_gyro * self.parameters.rest_threshold_gyro
+        let bias_clip = self.parameters.bias_clip.to_radians();
+        if squared_deviation
+            >= self.parameters.rest_threshold_gyro * self.parameters.rest_threshold_gyro
             || gyro_lp.abs().max() > bias_clip
         {
             self.state.rest = None;
@@ -548,7 +550,7 @@ impl Vqf {
         let acc_earth = (self.state.accelerometer * accel_low_pass).normalize();
 
         // inclination correction
-        let q_w = libm::sqrtf((acc_earth.z + 1.0) / 2.0); // equation 4
+        let q_w = math::sqrtf(f32::midpoint(acc_earth.z, 1.0)); // equation 4
 
         // equation 5
         let inclination_correction = if q_w > f32::EPSILON {
@@ -572,7 +574,9 @@ impl Vqf {
         let deviation = acc - accel_lp;
         let squared_deviation = deviation.dot(&deviation);
 
-        if squared_deviation >= self.parameters.rest_threshold_accel * self.parameters.rest_threshold_accel {
+        if squared_deviation
+            >= self.parameters.rest_threshold_accel * self.parameters.rest_threshold_accel
+        {
             self.state.rest = None;
         } else {
             self.state.rest = Some(self.state.rest.unwrap_or_default() + self.accel_rate);
@@ -584,7 +588,7 @@ impl Vqf {
     /// This is roughly equal to the `BiasEstimationStep` procedure from
     /// Algorithm 2 in the paper.
     fn bias_estimation_step(&mut self, acc_earth: Vector3<f32>) {
-        let bias_clip = self.parameters.bias_clip * (core::f32::consts::PI / 180.0);
+        let bias_clip = self.parameters.bias_clip.to_radians();
         let mut bias = self.state.bias;
 
         let accel_gyro_quat = self.orientation();
@@ -665,9 +669,14 @@ impl Vqf {
             let r_p = r * self.state.bias_p;
 
             let w_r_p_r_t = w_diag + (r_p * r_transpose);
-            let w_r_p_r_t_inv = match w_r_p_r_t.try_inverse() {
-                Some(inv) => inv,
-                None => return, // matrix not invertible, skip this update
+            let Some(w_r_p_r_t_inv) = w_r_p_r_t.try_inverse() else {
+                // in debug builds, panic to surface potential bugs early
+                #[cfg(debug_assertions)]
+                panic!("bias estimation: (W + R P R^T) is not invertible");
+
+                // in release builds, skip this update gracefully
+                #[allow(unreachable_code)]
+                return;
             };
             let k = self.state.bias_p * r_transpose * w_r_p_r_t_inv;
 
